@@ -9,7 +9,7 @@ RUN apt-get update \
 WORKDIR /source
 COPY . .
 
-RUN dotnet publish ./ProxyLight/ -r linux-x64 -c Release -o /app \
+RUN dotnet publish ./ProxyLight/ --disable-build-servers --sc -c Release -r linux-x64 -o /app \
   && rm /app/*.dbg
 
 FROM mcr.microsoft.com/dotnet/runtime-deps:9.0 AS deps
@@ -31,6 +31,15 @@ FROM mcr.microsoft.com/dotnet/runtime-deps:9.0 AS deps
 WORKDIR /app
 COPY --from=build /app .
 
-USER 1000:1000
-EXPOSE 8080
+ARG UID=1000
+ARG GID=1000
+ARG HOST="0.0.0.0"
+ARG PORT=5000
+
+ENV HTTP_PORTS=${PORT}
+ENV ASPNETCORE_URLS=http://${HOST}:${HTTP_PORTS}
+ENV DOTNET_ENVIRONMENT=Production
+
+USER ${UID}:${GID}
+EXPOSE ${PORT}
 ENTRYPOINT [ "/app/ProxyLight" ]

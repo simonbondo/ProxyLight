@@ -2,7 +2,7 @@ Trying to make the smallest possible docker image for a .NET app.
 
 Build using this command from src folder:
 ```sh
-docker build -t proxy . && docker run -t --rm -p 5000:5000 -p 8080:8080 --name proxy proxy:latest
+docker build -t proxy . && docker run -t --rm -p 5000:5000 --name proxy proxy:latest
 ```
 
 `ldd` shows dynamically linked libraries, i think.
