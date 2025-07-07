@@ -25,10 +25,17 @@ app.UseCors(policy => policy
     .AllowAnyMethod()
     .AllowAnyHeader());
 
+ulong requestId = 0;
+
 app.MapGet("/", async (IHttpClientFactory http, CancellationToken token, [FromQuery(Name = "u")] string remoteUrl = "") =>
 {
+    var id = Interlocked.Increment(ref requestId);
+    using var _ = app.Logger.BeginScope("RequestId: {Id}", id);
+
     if (string.IsNullOrEmpty(remoteUrl))
-        return Results.BadRequest<ErrorResponse>(new() { Error = "Parameter 'u' is required." });
+        return Results.BadRequest<ErrorResponse>(new() { RequestId = id, Error = "Parameter 'u' is required." });
+
+    app.Logger.LogInformation("[{Id}] Proxying GET request to {RemoteUrl}", id, remoteUrl);
 
     var proxy = http.CreateClient(ProxyClientName);
 
@@ -38,14 +45,19 @@ app.MapGet("/", async (IHttpClientFactory http, CancellationToken token, [FromQu
         response.EnsureSuccessStatusCode();
 
         var content = await response.Content.ReadAsByteArrayAsync(token);
-        return Results.Bytes(content, response.Content.Headers.ContentType?.ToString() ?? "application/octet-stream");
+        var contentType = response.Content.Headers.ContentType?.ToString() ?? "application/octet-stream";
+        app.Logger.LogInformation("[{Id}] Received {ContentLength} bytes of type {ContentType} from {RemoteUrl}", id, content.Length, contentType, remoteUrl);
+
+        return Results.Bytes(content, contentType);
     }
-    catch (HttpRequestException e)
+    catch (HttpRequestException ex)
     {
+        app.Logger.LogError(ex, "[{Id}] Error while proxying request to {RemoteUrl}", id, remoteUrl);
         return Results.BadRequest<ErrorResponse>(new()
         {
-            Error = "Request to remove endpoint failed",
-            Details = e.Message
+            RequestId = id,
+            Error = "Request to remote endpoint failed",
+            Details = ex.Message
         });
     }
 });
@@ -59,6 +71,7 @@ internal partial class ErrorResponseSerializer : JsonSerializerContext
 
 internal class ErrorResponse
 {
+    public required decimal RequestId { get; set; }
     public required string Error { get; set; }
     public string? Details { get; set; }
 }
