@@ -1,3 +1,5 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Mvc;
 
 const string ProxyClientName = "ProxyClient";
@@ -8,6 +10,14 @@ builder.Services
     {
         client.Timeout = TimeSpan.FromSeconds(30);
     });
+
+// Add ErrorResponse to the JSON TypeInfoResolver
+builder.Services.ConfigureHttpJsonOptions(options =>
+{
+    options.SerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
+    options.SerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
+    options.SerializerOptions.TypeInfoResolverChain.Add(ErrorResponseSerializer.Default);
+});
 
 var app = builder.Build();
 app.UseCors(policy => policy
@@ -34,3 +44,14 @@ app.MapGet("/", async (IHttpClientFactory http, CancellationToken token, [FromQu
 });
 
 app.Run();
+
+[JsonSerializable(type: typeof(ErrorResponse))]
+internal partial class ErrorResponseSerializer : JsonSerializerContext
+{
+}
+
+internal class ErrorResponse
+{
+    public required string Error { get; set; }
+    public string? Details { get; set; }
+}
