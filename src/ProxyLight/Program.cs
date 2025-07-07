@@ -27,6 +27,9 @@ app.UseCors(policy => policy
 
 app.MapGet("/", async (IHttpClientFactory http, CancellationToken token, [FromQuery(Name = "u")] string remoteUrl = "") =>
 {
+    if (string.IsNullOrEmpty(remoteUrl))
+        return Results.BadRequest<ErrorResponse>(new() { Error = "Parameter 'u' is required." });
+
     var proxy = http.CreateClient(ProxyClientName);
 
     try
@@ -39,7 +42,11 @@ app.MapGet("/", async (IHttpClientFactory http, CancellationToken token, [FromQu
     }
     catch (HttpRequestException e)
     {
-        return Results.Problem(e.Message);
+        return Results.BadRequest<ErrorResponse>(new()
+        {
+            Error = "Request to remove endpoint failed",
+            Details = e.Message
+        });
     }
 });
 
