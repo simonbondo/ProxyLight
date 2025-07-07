@@ -1,9 +1,10 @@
 using Microsoft.AspNetCore.Mvc;
 
+const string ProxyClientName = "ProxyClient";
 var builder = WebApplication.CreateBuilder(args);
 builder.Services
     .AddCors()
-    .AddHttpClient("ProxyClient", client =>
+    .AddHttpClient(ProxyClientName, client =>
     {
         client.Timeout = TimeSpan.FromSeconds(30);
     });
@@ -14,8 +15,10 @@ app.UseCors(policy => policy
     .AllowAnyMethod()
     .AllowAnyHeader());
 
-app.MapGet("/", async (HttpClient proxy, CancellationToken token, [FromQuery(Name = "u")] string remoteUrl) =>
+app.MapGet("/", async (IHttpClientFactory http, CancellationToken token, [FromQuery(Name = "u")] string remoteUrl = "") =>
 {
+    var proxy = http.CreateClient(ProxyClientName);
+
     try
     {
         var response = await proxy.GetAsync(remoteUrl, token);
