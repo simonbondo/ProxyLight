@@ -10,24 +10,10 @@ WORKDIR /source
 COPY . .
 
 RUN dotnet publish ./ProxyLight/ --disable-build-servers --sc -c Release -r linux-x64 -o /app \
-  && rm /app/*.dbg
+  && rm /app/*.dbg \
+  && rm /app/appsettings.Development.json
 
-FROM mcr.microsoft.com/dotnet/runtime-deps:9.0 AS deps
-# /usr/bin must be last, because it removes the rm command
-#RUN rm -rf /var \
-#  && rm -rf /root \
-#  && rm -rf /home \
-#  && rm /sbin \
-#  && rm -rf /usr/sbin \
-#  && rm -rf /usr/share \
-#  && rm -rf /usr/libexec \
-#  && rm /bin \
-#  && rm -rf /usr/bin
-#
-#FROM scratch
-#COPY --from=deps / /
-# Using FROM scratch, the app can start, but doesn't serve any requests - probably some of the removed files are needed at runtime
-
+FROM mcr.microsoft.com/dotnet/runtime-deps:9.0-noble-chiseled
 WORKDIR /app
 COPY --from=build /app .
 
