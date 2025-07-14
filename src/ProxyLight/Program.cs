@@ -77,6 +77,12 @@ app.MapGet("/", async (IHttpClientFactory http, ICacheService cacheService, Canc
     }
 });
 
+var cacheStatus = app.Services.GetRequiredService<ICacheService>().GetStatus();
+if (cacheStatus.IsEnabled)
+    app.Logger.LogInformation("Cache is enabled at path: {CachePath}", cacheStatus.Path);
+else
+    app.Logger.LogInformation("Cache is disabled");
+
 app.Run();
 
 internal interface ICacheService
@@ -107,8 +113,8 @@ internal class CacheService : ICacheService
             if (string.IsNullOrEmpty(_cachePath))
                 throw new InvalidOperationException("Cache path must be specified when cache is enabled.");
             if (!Directory.Exists(_cachePath))
-            Directory.CreateDirectory(_cachePath);
-    }
+                Directory.CreateDirectory(_cachePath);
+        }
     }
 
     public (bool IsEnabled, string Path) GetStatus() => (_cacheEnabled, _cachePath);
