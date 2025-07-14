@@ -32,3 +32,6 @@ Things that should be documented or features that should be added.
 - Other request types
 - Modify proxy request (add/remove headers, etc.)
 - Use stream instead of reading byte array to memory
+- Caching
+- Forwarding / customizing request headers (e.g. User-Agent)
+- Blacklisting and whitelisting domains (blocking LAN requests)
