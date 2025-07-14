@@ -21,6 +21,9 @@ builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.TypeInfoResolverChain.Add(ErrorResponseSerializer.Default);
 });
 
+builder.Services.Add(ServiceDescriptor.Scoped<ICacheService, CacheService>());
+// TODO: Add a hosted service to periodically clean up expired cache entries
+
 var app = builder.Build();
 app.UseCors(policy => policy
     .AllowAnyOrigin()
@@ -29,7 +32,7 @@ app.UseCors(policy => policy
 
 ulong requestId = 0;
 
-app.MapGet("/", async (IHttpClientFactory http, CancellationToken token, [FromQuery(Name = "u")] string remoteUrl = "") =>
+app.MapGet("/", async (IHttpClientFactory http, ICacheService cacheService, CancellationToken token, [FromQuery(Name = "u")] string remoteUrl = "") =>
 {
     var id = Interlocked.Increment(ref requestId);
     using var _ = app.Logger.BeginScope("RequestId: {Id}", id);
@@ -37,8 +40,14 @@ app.MapGet("/", async (IHttpClientFactory http, CancellationToken token, [FromQu
     if (string.IsNullOrEmpty(remoteUrl))
         return Results.BadRequest<ErrorResponse>(new() { RequestId = id, Error = "Parameter 'u' is required." });
 
-    app.Logger.LogInformation("[{Id}] Proxying GET request to {RemoteUrl}", id, remoteUrl);
+    var cacheItem = await cacheService.GetAsync("GET", remoteUrl, token);
+    if (cacheItem is not null)
+    {
+        app.Logger.LogInformation("[{Id}] Cache hit for {RemoteUrl}, returning cached response", id, remoteUrl);
+        return Results.Bytes(cacheItem.Content, cacheItem.ContentType);
+    }
 
+    app.Logger.LogInformation("[{Id}] Proxying GET request to {RemoteUrl}", id, remoteUrl);
     var proxy = http.CreateClient(ProxyClientName);
 
     try
@@ -50,6 +59,10 @@ app.MapGet("/", async (IHttpClientFactory http, CancellationToken token, [FromQu
         var contentType = response.Content.Headers.ContentType?.ToString() ?? "application/octet-stream";
         app.Logger.LogInformation("[{Id}] Received {ContentLength} bytes of type {ContentType} from {RemoteUrl}", id, content.Length, contentType, remoteUrl);
 
+        // Cache the response
+        await cacheService.SetOrUpdateAsync(response, "GET", remoteUrl, token);
+
+        // TODO: How to use status code from the response?
         return Results.Bytes(content, contentType);
     }
     catch (HttpRequestException ex)
