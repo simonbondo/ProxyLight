@@ -81,6 +81,7 @@ app.Run();
 
 internal interface ICacheService
 {
+    (bool IsEnabled, string Path) GetStatus();
     Task<CachedResponse?> GetAsync(string method, string requestUrl, CancellationToken cancellationToken);
     Task<CachedResponse> SetOrUpdateAsync(HttpResponseMessage response, string method, string requestUrl, CancellationToken cancellationToken);
     Task<CachedResponse> SetOrUpdateAsync(CachedResponse response, CancellationToken cancellationToken);
@@ -97,14 +98,20 @@ internal class CacheService : ICacheService
 
     public CacheService(IConfiguration configuration)
     {
-        var cachePath = configuration.GetValue<string?>("ProxyLight:Cache:Path");
-        _cacheEnabled = !string.IsNullOrEmpty(cachePath);
-        _cachePath = cachePath ?? string.Empty;
+        _cacheEnabled = configuration.GetValue("ProxyLight:Cache:Enabled", true);
+        _cachePath = configuration.GetValue("ProxyLight:Cache:Path", string.Empty);
         _cacheSlidingAge = configuration.GetValue("ProxyLight:Cache:SlidingAge", TimeSpan.FromMinutes(30));
 
-        if (_cacheEnabled && !Directory.Exists(_cachePath))
+        if (_cacheEnabled)
+        {
+            if (string.IsNullOrEmpty(_cachePath))
+                throw new InvalidOperationException("Cache path must be specified when cache is enabled.");
+            if (!Directory.Exists(_cachePath))
             Directory.CreateDirectory(_cachePath);
     }
+    }
+
+    public (bool IsEnabled, string Path) GetStatus() => (_cacheEnabled, _cachePath);
 
     public async Task<CachedResponse?> GetAsync(string method, string requestUrl, CancellationToken cancellationToken)
     {
