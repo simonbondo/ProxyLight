@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Mvc;
@@ -11,11 +13,11 @@ builder.Services
         client.Timeout = TimeSpan.FromSeconds(30);
     });
 
-// Add ErrorResponse to the JSON TypeInfoResolver
 builder.Services.ConfigureHttpJsonOptions(options =>
 {
     options.SerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
     options.SerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
+    // Add ErrorResponse to the JSON TypeInfoResolver
     options.SerializerOptions.TypeInfoResolverChain.Add(ErrorResponseSerializer.Default);
 });
 
@@ -64,9 +66,118 @@ app.MapGet("/", async (IHttpClientFactory http, CancellationToken token, [FromQu
 
 app.Run();
 
-[JsonSerializable(type: typeof(ErrorResponse))]
-internal partial class ErrorResponseSerializer : JsonSerializerContext
+internal interface ICacheService
 {
+    Task<CachedResponse?> GetAsync(string method, string requestUrl, CancellationToken cancellationToken);
+    Task<CachedResponse> SetOrUpdateAsync(HttpResponseMessage response, string method, string requestUrl, CancellationToken cancellationToken);
+    Task<CachedResponse> SetOrUpdateAsync(CachedResponse response, CancellationToken cancellationToken);
+    /// <summary> Removes the cached response if it has expired. Returns true if the response was removed, false otherwise.</summary>
+    bool RemoveIfExpired(CachedResponse response);
+    void Remove(string method, string requestUrl);
+}
+
+internal class CacheService : ICacheService
+{
+    private readonly string _cachePath;
+    private readonly TimeSpan _cacheSlidingAge;
+    private readonly bool _cacheEnabled;
+
+    public CacheService(IConfiguration configuration)
+    {
+        var cachePath = configuration.GetValue<string?>("ProxyLight:Cache:Path");
+        _cacheEnabled = !string.IsNullOrEmpty(cachePath);
+        _cachePath = cachePath ?? string.Empty;
+        _cacheSlidingAge = configuration.GetValue("ProxyLight:Cache:SlidingAge", TimeSpan.FromMinutes(30));
+
+        if (_cacheEnabled && !Directory.Exists(_cachePath))
+            Directory.CreateDirectory(_cachePath);
+    }
+
+    public async Task<CachedResponse?> GetAsync(string method, string requestUrl, CancellationToken cancellationToken)
+    {
+        if (!_cacheEnabled)
+            return null;
+
+        var cacheKey = GetCacheKey(method, requestUrl);
+        var cacheFilePath = Path.Combine(_cachePath, $"{cacheKey}.json");
+        if (!File.Exists(cacheFilePath))
+            return null;
+
+        CachedResponse? cacheItem;
+        using (var fileStream = new FileStream(cacheFilePath, FileMode.Open, FileAccess.Read, FileShare.Read))
+            cacheItem = await JsonSerializer.DeserializeAsync(fileStream, CachedResponseSerializer.Default.CachedResponse, cancellationToken);
+
+        if (cacheItem is null || RemoveIfExpired(cacheItem))
+            return null;
+
+        return await SetOrUpdateAsync(cacheItem, cancellationToken);
+    }
+
+    public async Task<CachedResponse> SetOrUpdateAsync(HttpResponseMessage response, string method, string requestUrl, CancellationToken token)
+    {
+        var cacheItem = new CachedResponse
+        {
+            Timestamp = default,
+            Method = method.ToUpperInvariant(),
+            RequestUrl = requestUrl,
+            ContentType = response.Content.Headers.ContentType?.ToString() ?? "application/octet-stream",
+            Content = await response.Content.ReadAsByteArrayAsync(token)
+        };
+        return await SetOrUpdateAsync(cacheItem, token);
+    }
+
+    public async Task<CachedResponse> SetOrUpdateAsync(CachedResponse response, CancellationToken token)
+    {
+        response.Timestamp = DateTimeOffset.UtcNow;
+        if (!_cacheEnabled)
+            return response;
+
+        var cacheKey = GetCacheKey(response.Method, response.RequestUrl);
+        var cacheFilePath = Path.Combine(_cachePath, $"{cacheKey}.json");
+
+        using (var fileStream = new FileStream(cacheFilePath, FileMode.Create, FileAccess.Write, FileShare.None))
+            await JsonSerializer.SerializeAsync(fileStream, response, CachedResponseSerializer.Default.CachedResponse, token);
+
+        return response;
+    }
+
+    public bool RemoveIfExpired(CachedResponse response)
+    {
+        if (response.Timestamp + _cacheSlidingAge >= DateTimeOffset.UtcNow)
+            return false;
+
+        // If the cached response is older than the sliding age, remove it
+        Remove(response.Method, response.RequestUrl);
+        return true;
+    }
+
+    public void Remove(string method, string requestUrl)
+    {
+        var cacheKey = GetCacheKey(method, requestUrl);
+        var cacheFilePath = Path.Combine(_cachePath, $"{cacheKey}.json");
+        if (File.Exists(cacheFilePath))
+            File.Delete(cacheFilePath);
+    }
+
+    private static string GetCacheKey(string method, string requestUrl)
+        => Convert.ToHexStringLower(SHA1.HashData(Encoding.UTF8.GetBytes($"{method.ToUpperInvariant()}:{requestUrl}")));
+}
+
+// TODO: Maybe split cache metadata and content into separate files, to make querying more efficient
+internal class CachedResponse
+{
+    public required DateTimeOffset Timestamp { get; set; }
+    public required string Method { get; set; }
+    public required string RequestUrl { get; set; }
+    public required string ContentType { get; set; }
+    public string ContentBase64
+    {
+        get => Convert.ToBase64String(Content);
+        set => Content = string.IsNullOrEmpty(value) ? [] : Convert.FromBase64String(value);
+    }
+
+    [JsonIgnore]
+    internal byte[] Content { get; set; } = [];
 }
 
 internal class ErrorResponse
@@ -74,4 +185,14 @@ internal class ErrorResponse
     public required decimal RequestId { get; set; }
     public required string Error { get; set; }
     public string? Details { get; set; }
+}
+
+[JsonSerializable(type: typeof(ErrorResponse))]
+internal partial class ErrorResponseSerializer : JsonSerializerContext
+{
+}
+
+[JsonSerializable(type: typeof(CachedResponse))]
+internal partial class CachedResponseSerializer : JsonSerializerContext
+{
 }
