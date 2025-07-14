@@ -12,7 +12,7 @@ Build and run using these commands from src folder:
 
 ```sh
 docker build -t proxy .
-docker run -t --rm -p 5000:5000 --name proxy proxy:latest
+docker run -t --rm -p 5000:5000 -v ./cache:/app/cache -e PROXYLIGHT__CACHE__ENABLED=true --name proxy proxy:latest
 ```
 
 ## Docker image
