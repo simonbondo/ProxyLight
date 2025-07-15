@@ -27,11 +27,11 @@ Resulting image is about 45 MB in size.
 
 Things that should be documented or features that should be added.
 
-- CORS
-- Logging
+- CORS documentation
+- (Better) Logging
 - Other request types
 - Modify proxy request (add/remove headers, etc.)
 - Use stream instead of reading byte array to memory
-- Caching
+- Caching with cache eviction and separation of metadata from cache content
 - Forwarding / customizing request headers (e.g. User-Agent)
 - Blacklisting and whitelisting domains (blocking LAN requests)
