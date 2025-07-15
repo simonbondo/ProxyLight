@@ -130,8 +130,16 @@ internal class CacheService : ICacheService
             return null;
 
         CachedResponse? cacheItem;
-        using (var fileStream = new FileStream(cacheFilePath, FileMode.Open, FileAccess.Read, FileShare.Read))
-            cacheItem = await JsonSerializer.DeserializeAsync(fileStream, CachedResponseSerializer.Default.CachedResponse, cancellationToken);
+        try
+        {
+            using (var fileStream = new FileStream(cacheFilePath, FileMode.Open, FileAccess.Read, FileShare.Read))
+                cacheItem = await JsonSerializer.DeserializeAsync(fileStream, CachedResponseSerializer.Default.CachedResponse, cancellationToken);
+        }
+        catch
+        {
+            Remove(method, requestUrl);
+            return null;
+        }
 
         if (cacheItem is null || RemoveIfExpired(cacheItem))
             return null;
