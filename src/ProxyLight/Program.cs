@@ -30,11 +30,20 @@ app.UseCors(policy => policy
     .AllowAnyMethod()
     .AllowAnyHeader());
 
+// Prune cache on startup
+app.Services.GetRequiredService<ICacheService>().PruneCache();
+
 ulong requestId = 0;
 
 app.MapGet("/", async (IHttpClientFactory http, ICacheService cacheService, CancellationToken token, [FromQuery(Name = "u")] string remoteUrl = "") =>
 {
     var id = Interlocked.Increment(ref requestId);
+    if (id % 1000 == 0)
+    {
+        var prunedItemCount = cacheService.PruneCache();
+        app.Logger.LogInformation("Pruned {Count} cached items", prunedItemCount);
+    }
+
     using var _ = app.Logger.BeginScope("RequestId: {Id}", id);
 
     if (string.IsNullOrEmpty(remoteUrl))
@@ -94,6 +103,7 @@ internal interface ICacheService
     /// <summary> Removes the cached response if it has expired. Returns true if the response was removed, false otherwise.</summary>
     bool RemoveIfExpired(CachedResponse response);
     void Remove(string method, string requestUrl);
+    int PruneCache();
 }
 
 internal class CacheService : ICacheService
@@ -132,8 +142,8 @@ internal class CacheService : ICacheService
         CachedResponse? cacheItem;
         try
         {
-            using (var fileStream = new FileStream(cacheFilePath, FileMode.Open, FileAccess.Read, FileShare.Read))
-                cacheItem = await JsonSerializer.DeserializeAsync(fileStream, CachedResponseSerializer.Default.CachedResponse, cancellationToken);
+            using var fileStream = new FileStream(cacheFilePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            cacheItem = await JsonSerializer.DeserializeAsync(fileStream, CachedResponseSerializer.Default.CachedResponse, cancellationToken);
         }
         catch
         {
@@ -195,6 +205,34 @@ internal class CacheService : ICacheService
 
     private static string GetCacheKey(string method, string requestUrl)
         => Convert.ToHexStringLower(SHA1.HashData(Encoding.UTF8.GetBytes($"{method.ToUpperInvariant()}:{requestUrl}")));
+
+    public int PruneCache()
+    {
+        if (!_cacheEnabled || string.IsNullOrEmpty(_cachePath) || !Directory.Exists(_cachePath))
+            return 0;
+
+        var files = Directory.GetFiles(_cachePath, "*.json");
+        int removedCount = 0;
+        foreach (var file in files)
+        {
+            try
+            {
+                var lastWriteTime = File.GetLastWriteTimeUtc(file);
+                if (DateTime.UtcNow - lastWriteTime > _cacheSlidingAge)
+                {
+                    File.Delete(file);
+                    removedCount++;
+                }
+            }
+            catch (Exception ex)
+            {
+                // Log the error but continue processing other files
+                Console.Error.WriteLine($"Error removing file {file}: {ex.Message}");
+            }
+        }
+
+        return removedCount;
+    }
 }
 
 // TODO: Maybe split cache metadata and content into separate files, to make querying more efficient
