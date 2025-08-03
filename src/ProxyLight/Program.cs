@@ -40,7 +40,7 @@ ulong requestId = 0;
 app.MapGet("/", async (IHttpClientFactory http, ICacheService cacheService, CancellationToken token, [FromQuery(Name = "u")] string remoteUrl = "") =>
 {
     var id = Interlocked.Increment(ref requestId);
-    var pruneFreq = app.Configuration.GetValue("ProxyLight:Cache:PruneFrequency", 100u);
+    var pruneFreq = app.Configuration.GetValue("ProxyLight:Cache:PruneFrequency", 100ul);
     if (id % pruneFreq == 0)
     {
         var prunedItemCount = cacheService.PruneCache();
