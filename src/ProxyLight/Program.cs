@@ -31,14 +31,17 @@ app.UseCors(policy => policy
     .AllowAnyHeader());
 
 // Prune cache on startup
-app.Services.GetRequiredService<ICacheService>().PruneCache();
+var prunedItemCount = app.Services.GetRequiredService<ICacheService>().PruneCache();
+if (prunedItemCount > 0)
+    app.Logger.LogInformation("Pruned {Count} cached items", prunedItemCount);
 
 ulong requestId = 0;
 
 app.MapGet("/", async (IHttpClientFactory http, ICacheService cacheService, CancellationToken token, [FromQuery(Name = "u")] string remoteUrl = "") =>
 {
     var id = Interlocked.Increment(ref requestId);
-    if (id % 1000 == 0)
+    var pruneFreq = app.Configuration.GetValue("ProxyLight:Cache:PruneFrequency", 100u);
+    if (id % pruneFreq == 0)
     {
         var prunedItemCount = cacheService.PruneCache();
         app.Logger.LogInformation("Pruned {Count} cached items", prunedItemCount);
