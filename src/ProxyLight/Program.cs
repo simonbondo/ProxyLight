@@ -10,7 +10,7 @@ builder.Services
     .AddCors()
     .AddHttpClient(ProxyClientName, client =>
     {
-        client.Timeout = TimeSpan.FromSeconds(30);
+        client.Timeout = Timeout.InfiniteTimeSpan;
     });
 
 builder.Services.ConfigureHttpJsonOptions(options =>
