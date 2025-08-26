@@ -60,7 +60,7 @@ app.MapGet("/", async (IHttpClientFactory http, ICacheService cacheService, Canc
     }
 
     app.Logger.LogInformation("[{Id}] Proxying GET request to {RemoteUrl}", id, remoteUrl);
-    var proxy = http.CreateClient(ProxyClientName);
+    using var proxy = http.CreateClient(ProxyClientName);
 
     try
     {
