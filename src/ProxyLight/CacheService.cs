@@ -1,0 +1,134 @@
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+
+namespace ProxyLight;
+
+internal class CacheService : ICacheService
+{
+    private readonly string _cachePath;
+    private readonly TimeSpan _cacheSlidingAge;
+    private readonly bool _cacheEnabled;
+
+    public CacheService(IConfiguration configuration)
+    {
+        _cacheEnabled = configuration.GetValue("ProxyLight:Cache:Enabled", true);
+        _cachePath = configuration.GetValue("ProxyLight:Cache:Path", string.Empty);
+        _cacheSlidingAge = configuration.GetValue("ProxyLight:Cache:SlidingAge", TimeSpan.FromMinutes(30));
+
+        if (_cacheEnabled)
+        {
+            if (string.IsNullOrEmpty(_cachePath))
+                throw new InvalidOperationException("Cache path must be specified when cache is enabled.");
+            if (!Directory.Exists(_cachePath))
+                Directory.CreateDirectory(_cachePath);
+        }
+    }
+
+    public (bool IsEnabled, string Path) GetStatus() => (_cacheEnabled, _cachePath);
+
+    public async Task<CachedResponse?> GetAsync(string method, string requestUrl, CancellationToken cancellationToken)
+    {
+        if (!_cacheEnabled)
+            return null;
+
+        var cacheKey = GetCacheKey(method, requestUrl);
+        var cacheFilePath = Path.Combine(_cachePath, $"{cacheKey}.json");
+        if (!File.Exists(cacheFilePath))
+            return null;
+
+        CachedResponse? cacheItem;
+        try
+        {
+            using var fileStream = new FileStream(cacheFilePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            cacheItem = await JsonSerializer.DeserializeAsync(fileStream, CachedResponseSerializer.Default.CachedResponse, cancellationToken);
+        }
+        catch
+        {
+            Remove(method, requestUrl);
+            return null;
+        }
+
+        if (cacheItem is null || RemoveIfExpired(cacheItem))
+            return null;
+
+        return await SetOrUpdateAsync(cacheItem, cancellationToken);
+    }
+
+    public async Task<CachedResponse> SetOrUpdateAsync(HttpResponseMessage response, string method, string requestUrl, CancellationToken token)
+    {
+        var cacheItem = new CachedResponse
+        {
+            Timestamp = default,
+            Method = method.ToUpperInvariant(),
+            RequestUrl = requestUrl,
+            ContentType = response.Content.Headers.ContentType?.ToString() ?? "application/octet-stream",
+            Content = await response.Content.ReadAsByteArrayAsync(token)
+        };
+        return await SetOrUpdateAsync(cacheItem, token);
+    }
+
+    public async Task<CachedResponse> SetOrUpdateAsync(CachedResponse response, CancellationToken token)
+    {
+        response.Timestamp = DateTimeOffset.UtcNow;
+        if (!_cacheEnabled)
+            return response;
+
+        var cacheKey = GetCacheKey(response.Method, response.RequestUrl);
+        var cacheFilePath = Path.Combine(_cachePath, $"{cacheKey}.json");
+
+        using (var fileStream = new FileStream(cacheFilePath, FileMode.Create, FileAccess.Write, FileShare.None))
+            await JsonSerializer.SerializeAsync(fileStream, response, CachedResponseSerializer.Default.CachedResponse, token);
+
+        return response;
+    }
+
+    public bool RemoveIfExpired(CachedResponse response)
+    {
+        if (response.Timestamp + _cacheSlidingAge >= DateTimeOffset.UtcNow)
+            return false;
+
+        // If the cached response is older than the sliding age, remove it
+        Remove(response.Method, response.RequestUrl);
+        return true;
+    }
+
+    public void Remove(string method, string requestUrl)
+    {
+        var cacheKey = GetCacheKey(method, requestUrl);
+        var cacheFilePath = Path.Combine(_cachePath, $"{cacheKey}.json");
+        if (File.Exists(cacheFilePath))
+            File.Delete(cacheFilePath);
+    }
+
+    private static string GetCacheKey(string method, string requestUrl)
+        => Convert.ToHexStringLower(SHA1.HashData(Encoding.UTF8.GetBytes($"{method.ToUpperInvariant()}:{requestUrl}")));
+
+    public int PruneCache()
+    {
+        if (!_cacheEnabled || string.IsNullOrEmpty(_cachePath) || !Directory.Exists(_cachePath))
+            return 0;
+
+        var files = Directory.GetFiles(_cachePath, "*.json");
+        int removedCount = 0;
+        foreach (var file in files)
+        {
+            try
+            {
+                var lastWriteTime = File.GetLastWriteTimeUtc(file);
+                if (DateTime.UtcNow - lastWriteTime > _cacheSlidingAge)
+                {
+                    File.Delete(file);
+                    removedCount++;
+                }
+            }
+            catch (Exception ex)
+            {
+                // Log the error but continue processing other files
+                Console.Error.WriteLine($"Error removing file {file}: {ex.Message}");
+            }
+        }
+
+        return removedCount;
+    }
+}
