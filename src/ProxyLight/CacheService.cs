@@ -52,11 +52,33 @@ internal class CacheService : ICacheService
         if (cacheItem is null || RemoveIfExpired(cacheItem))
             return null;
 
-        return await SetOrUpdateAsync(cacheItem, cancellationToken);
+        await SetOrUpdateAsync(cacheItem, cancellationToken);
+        return cacheItem;
     }
 
-    public async Task<CachedResponse> SetOrUpdateAsync(HttpResponseMessage response, string method, string requestUrl, CancellationToken token)
+    public async Task SetOrUpdateAsync(HttpRequestMessage request, HttpContent responseContent, CancellationToken token)
     {
+        if (!_cacheEnabled)
+            return;
+
+        ArgumentNullException.ThrowIfNull(request?.RequestUri);
+
+        var cacheItem = new CachedResponse
+        {
+            Timestamp = default,
+            Method = request.Method.Method,
+            RequestUrl = request.RequestUri.ToString(),
+            ContentType = responseContent.Headers.ContentType?.ToString() ?? "application/octet-stream",
+            Content = await responseContent.ReadAsByteArrayAsync(token)
+        };
+        await SetOrUpdateAsync(cacheItem, token);
+    }
+
+    public async Task SetOrUpdateAsync(HttpResponseMessage response, string method, string requestUrl, CancellationToken token)
+    {
+        if (!_cacheEnabled)
+            return;
+
         var cacheItem = new CachedResponse
         {
             Timestamp = default,
@@ -65,22 +87,21 @@ internal class CacheService : ICacheService
             ContentType = response.Content.Headers.ContentType?.ToString() ?? "application/octet-stream",
             Content = await response.Content.ReadAsByteArrayAsync(token)
         };
-        return await SetOrUpdateAsync(cacheItem, token);
+        await SetOrUpdateAsync(cacheItem, token);
     }
 
-    public async Task<CachedResponse> SetOrUpdateAsync(CachedResponse response, CancellationToken token)
+    public async Task SetOrUpdateAsync(CachedResponse response, CancellationToken token)
     {
-        response.Timestamp = DateTimeOffset.UtcNow;
         if (!_cacheEnabled)
-            return response;
+            return;
+
+        response.Timestamp = DateTimeOffset.UtcNow;
 
         var cacheKey = GetCacheKey(response.Method, response.RequestUrl);
         var cacheFilePath = Path.Combine(_cachePath, $"{cacheKey}.json");
 
-        using (var fileStream = new FileStream(cacheFilePath, FileMode.Create, FileAccess.Write, FileShare.None))
-            await JsonSerializer.SerializeAsync(fileStream, response, CachedResponseSerializer.Default.CachedResponse, token);
-
-        return response;
+        using var fileStream = new FileStream(cacheFilePath, FileMode.Create, FileAccess.Write, FileShare.None);
+        await JsonSerializer.SerializeAsync(fileStream, response, CachedResponseSerializer.Default.CachedResponse, token);
     }
 
     public bool RemoveIfExpired(CachedResponse response)

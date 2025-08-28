@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+
 using Microsoft.AspNetCore.Mvc;
 
 const string ProxyClientName = "ProxyClient";
@@ -20,6 +21,7 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 });
 
 builder.Services.Add(ServiceDescriptor.Singleton<ICacheService, CacheService>());
+builder.Services.Add(ServiceDescriptor.Singleton<IHostThrottleProxy, HostThrottleProxy>());
 // TODO: Add a hosted service to periodically clean up expired cache entries
 
 var app = builder.Build();
@@ -35,7 +37,7 @@ if (prunedItemCount > 0)
 
 ulong requestId = 0;
 
-app.MapGet("/", async (IHttpClientFactory http, ICacheService cacheService, CancellationToken token, [FromQuery(Name = "u")] string remoteUrl = "") =>
+app.MapGet("/", async (IHttpClientFactory http, ICacheService cacheService, IHostThrottleProxy hostThrottleProxy, CancellationToken token, [FromQuery(Name = "u")] string remoteUrl = "") =>
 {
     var id = Interlocked.Increment(ref requestId);
     // TODO: Move prune logic to a background thread and/or inside the cache service
@@ -54,27 +56,25 @@ app.MapGet("/", async (IHttpClientFactory http, ICacheService cacheService, Canc
     var cacheItem = await cacheService.GetAsync("GET", remoteUrl, token);
     if (cacheItem is not null)
     {
-        app.Logger.LogInformation("[{Id}] Cache hit for {RemoteUrl}, returning cached response", id, remoteUrl);
+        app.Logger.LogInformation("[{Id}] Cache hit for {RemoteUrl}", id, remoteUrl);
         return Results.Bytes(cacheItem.Content, cacheItem.ContentType);
     }
 
-    app.Logger.LogInformation("[{Id}] Proxying GET request to {RemoteUrl}", id, remoteUrl);
-    using var proxy = http.CreateClient(ProxyClientName);
-
+    var request = new HttpRequestMessage(HttpMethod.Get, remoteUrl);
+    // TODO: Copy headers and other properties from the original request
     try
     {
-        var response = await proxy.GetAsync(remoteUrl, token);
-        response.EnsureSuccessStatusCode();
+        var responseContent = await hostThrottleProxy.SendRequestAsync(request, token);
 
-        var content = await response.Content.ReadAsByteArrayAsync(token);
-        var contentType = response.Content.Headers.ContentType?.ToString() ?? "application/octet-stream";
-        app.Logger.LogInformation("[{Id}] Received {ContentLength} bytes of type {ContentType} from {RemoteUrl}", id, content.Length, contentType, remoteUrl);
+        var contentData = await responseContent.ReadAsByteArrayAsync(token);
+        var contentType = responseContent.Headers.ContentType?.ToString() ?? "application/octet-stream";
+        app.Logger.LogInformation("[{Id}] Received {ContentLength} bytes of type {ContentType} from {RemoteUrl}", id, contentData.Length, contentType, remoteUrl);
 
         // Cache the response
-        await cacheService.SetOrUpdateAsync(response, "GET", remoteUrl, token);
+        await cacheService.SetOrUpdateAsync(request, responseContent, token);
 
         // TODO: How to use status code from the response?
-        return Results.Bytes(content, contentType);
+        return Results.Bytes(contentData, contentType);
     }
     catch (HttpRequestException ex)
     {
@@ -83,6 +83,16 @@ app.MapGet("/", async (IHttpClientFactory http, ICacheService cacheService, Canc
         {
             RequestId = id,
             Error = "Request to remote endpoint failed",
+            Details = ex.Message
+        });
+    }
+    catch (Exception ex)
+    {
+        app.Logger.LogError(ex, "[{Id}] Unexpected error while proxying request to {RemoteUrl}", id, remoteUrl);
+        return Results.InternalServerError<ErrorResponse>(new()
+        {
+            RequestId = id,
+            Error = "Unexpected error",
             Details = ex.Message
         });
     }
