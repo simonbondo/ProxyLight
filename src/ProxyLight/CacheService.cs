@@ -9,12 +9,14 @@ internal class CacheService : ICacheService
     private readonly string _cachePath;
     private readonly TimeSpan _cacheSlidingAge;
     private readonly bool _cacheEnabled;
+    private readonly TimeProvider _timeProvider;
 
-    public CacheService(IConfiguration configuration)
+    public CacheService(IConfiguration configuration, TimeProvider timeProvider)
     {
         _cacheEnabled = configuration.GetValue("ProxyLight:Cache:Enabled", true);
         _cachePath = configuration.GetValue("ProxyLight:Cache:Path", string.Empty);
         _cacheSlidingAge = configuration.GetValue("ProxyLight:Cache:SlidingAge", TimeSpan.FromMinutes(30));
+        _timeProvider = timeProvider;
 
         if (_cacheEnabled)
         {
@@ -95,7 +97,7 @@ internal class CacheService : ICacheService
         if (!_cacheEnabled)
             return;
 
-        response.Timestamp = DateTimeOffset.UtcNow;
+        response.Timestamp = _timeProvider.GetUtcNow();
 
         var cacheKey = GetCacheKey(response.Method, response.RequestUrl);
         var cacheFilePath = Path.Combine(_cachePath, $"{cacheKey}.json");
@@ -106,7 +108,7 @@ internal class CacheService : ICacheService
 
     public bool RemoveIfExpired(CachedResponse response)
     {
-        if (response.Timestamp + _cacheSlidingAge >= DateTimeOffset.UtcNow)
+        if (response.Timestamp + _cacheSlidingAge >= _timeProvider.GetUtcNow())
             return false;
 
         // If the cached response is older than the sliding age, remove it
@@ -137,7 +139,7 @@ internal class CacheService : ICacheService
             try
             {
                 var lastWriteTime = File.GetLastWriteTimeUtc(file);
-                if (DateTime.UtcNow - lastWriteTime > _cacheSlidingAge)
+                if (_timeProvider.GetUtcNow() - lastWriteTime > _cacheSlidingAge)
                 {
                     File.Delete(file);
                     removedCount++;

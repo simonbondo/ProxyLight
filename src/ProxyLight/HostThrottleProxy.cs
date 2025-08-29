@@ -13,11 +13,13 @@ public class HostThrottleProxy : IHostThrottleProxy
     private readonly ConcurrentDictionary<string, ChannelMeta> _channels = new();
     private readonly ILogger<HostThrottleProxy> _logger;
     private readonly IServiceScopeFactory _serviceScopeFactory;
+    private readonly TimeProvider _timeProvider;
 
-    public HostThrottleProxy(ILogger<HostThrottleProxy> logger, IServiceScopeFactory serviceScopeFactory)
+    public HostThrottleProxy(ILogger<HostThrottleProxy> logger, IServiceScopeFactory serviceScopeFactory, TimeProvider timeProvider)
     {
         _logger = logger;
         _serviceScopeFactory = serviceScopeFactory;
+        _timeProvider = timeProvider;
     }
 
     public async Task<HttpContent> SendRequestAsync(HttpRequestMessage request, CancellationToken cancellationToken)
@@ -41,8 +43,9 @@ public class HostThrottleProxy : IHostThrottleProxy
         return await meta.GetResultTask();
     }
 
-    public void ChannelMaintenance(DateTime idleThreshold)
+    public void ChannelMaintenance(TimeSpan maxIdleTime)
     {
+        var idleThreshold = _timeProvider.GetUtcNow() - maxIdleTime;
         KeyValuePair<string, ChannelMeta>? GetIdleChannel()
             => _channels.FirstOrDefault(kvp => kvp.Value.GetLastActivityTimeStamp() < idleThreshold);
 
@@ -141,17 +144,19 @@ public class HostThrottleProxy : IHostThrottleProxy
     private class ChannelMeta
     {
         private readonly Channel<ChannelItem> _channel;
+        private readonly TimeProvider _timeProvider;
         private long _lastActivityTimestamp;
 
-        public ChannelMeta(Channel<ChannelItem> channel)
+        public ChannelMeta(Channel<ChannelItem> channel, TimeProvider timeProvider)
         {
             _channel = channel;
-            _lastActivityTimestamp = DateTime.UtcNow.ToBinary();
+            _timeProvider = timeProvider;
+            _lastActivityTimestamp = timeProvider.GetUtcNow().DateTime.ToBinary();
         }
 
         public ChannelWriter<ChannelItem> Writer => _channel.Writer;
         public CancellationTokenSource CancellationTokenSource { get; } = new();
-        public void UpdateActivity() => Interlocked.Exchange(ref _lastActivityTimestamp, DateTime.UtcNow.ToBinary());
+        public void UpdateActivity() => Interlocked.Exchange(ref _lastActivityTimestamp, _timeProvider.GetUtcNow().DateTime.ToBinary());
         public DateTime GetLastActivityTimeStamp() => DateTime.FromBinary(Interlocked.Read(ref _lastActivityTimestamp));
     }
 

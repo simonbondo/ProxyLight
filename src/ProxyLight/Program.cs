@@ -22,18 +22,12 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 
 builder.Services.Add(ServiceDescriptor.Singleton<ICacheService, CacheService>());
 builder.Services.Add(ServiceDescriptor.Singleton<IHostThrottleProxy, HostThrottleProxy>());
-// TODO: Add a hosted service to periodically clean up expired cache entries
 
 var app = builder.Build();
 app.UseCors(policy => policy
     .AllowAnyOrigin()
     .AllowAnyMethod()
     .AllowAnyHeader());
-
-// Prune cache on startup
-var prunedItemCount = app.Services.GetRequiredService<ICacheService>().PruneCache();
-if (prunedItemCount > 0)
-    app.Logger.LogInformation("Pruned {Count} cached items", prunedItemCount);
 
 ulong requestId = 0;
 
@@ -103,5 +97,26 @@ if (cacheStatus.IsEnabled)
     app.Logger.LogInformation("Cache is enabled at path: {CachePath}", cacheStatus.Path);
 else
     app.Logger.LogInformation("Cache is disabled");
+
+// TODO: Move to HostedService
+await Task.Factory.StartNew(async (state) =>
+{
+    var cancellationToken = (CancellationToken)state!;
+    await using var scope = app.Services.GetRequiredService<IServiceScopeFactory>().CreateAsyncScope();
+    var cacheService = scope.ServiceProvider.GetRequiredService<ICacheService>();
+    var hostThrottleProxy = scope.ServiceProvider.GetRequiredService<IHostThrottleProxy>();
+
+    var timer = new PeriodicTimer(TimeSpan.FromMinutes(10));
+    var maxIdleTime = TimeSpan.FromMinutes(30);
+    do
+    {
+        var prunedItemCount = cacheService.PruneCache();
+        if (prunedItemCount > 0)
+            app.Logger.LogInformation("Pruned {Count} cached items", prunedItemCount);
+
+        // Perform channel maintenance for channels idle for more than 30 minutes
+        hostThrottleProxy.ChannelMaintenance(maxIdleTime);
+    } while (await timer.WaitForNextTickAsync(cancellationToken));
+}, app.Lifetime.ApplicationStopping, TaskCreationOptions.LongRunning);
 
 app.Run();

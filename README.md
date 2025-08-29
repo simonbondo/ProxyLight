@@ -28,7 +28,6 @@ Resulting image is about 45 MB in size.
 Things that should be documented or features that should be added.
 
 - CORS documentation
-- (Better) Logging
 - Other request types
 - Modify proxy request (add/remove headers, etc.)
 - Use stream instead of reading byte array to memory
