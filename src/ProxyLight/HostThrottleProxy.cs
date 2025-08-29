@@ -8,8 +8,9 @@ public class HostThrottleProxy : IHostThrottleProxy
     // TODO: Make configurable
     private const int ConcurrencyPerHost = 4;
     private const int ChannelCapacityPerHost = 25;
+    private const int ChannelCompletionTimeoutSeconds = 30;
     private const string HttpClientName = "ProxyClient";
-    private readonly ConcurrentDictionary<string, Channel<ChannelItemMeta>> _channels = new();
+    private readonly ConcurrentDictionary<string, ChannelMeta> _channels = new();
     private readonly ILogger<HostThrottleProxy> _logger;
     private readonly IServiceScopeFactory _serviceScopeFactory;
 
@@ -26,7 +27,7 @@ public class HostThrottleProxy : IHostThrottleProxy
 
         var writer = GetChannelWriter(request.RequestUri.Host);
 
-        var meta = new ChannelItemMeta(request, cancellationToken);
+        var meta = new ChannelItem(request, cancellationToken);
 
         _logger.LogInformation("Enqueuing request for {RequestUrl}", request.RequestUri);
 
@@ -40,14 +41,36 @@ public class HostThrottleProxy : IHostThrottleProxy
         return await meta.GetResultTask();
     }
 
-    private ChannelWriter<ChannelItemMeta> GetChannelWriter(string host)
-        => _channels.GetOrAdd(host, OpenChannel).Writer;
+    public void ChannelMaintenance(DateTime idleThreshold)
+    {
+        KeyValuePair<string, ChannelMeta>? GetIdleChannel()
+            => _channels.FirstOrDefault(kvp => kvp.Value.GetLastActivityTimeStamp() < idleThreshold);
 
-    private Channel<ChannelItemMeta> OpenChannel(string host)
+        while (GetIdleChannel() is { } kvp)
+        {
+            _logger.LogInformation("Signalling idle channel for host {Host} as completed", kvp.Key);
+
+            if (_channels.TryRemove(kvp.Key, out var meta))
+            {
+                // Force the channel to complete after a delay, if it doesn't close by completion
+                meta.CancellationTokenSource.CancelAfter(TimeSpan.FromSeconds(ChannelCompletionTimeoutSeconds));
+                meta.Writer.TryComplete();
+            }
+        }
+    }
+
+    private ChannelWriter<ChannelItem> GetChannelWriter(string host)
+    {
+        var meta = _channels.GetOrAdd(host, OpenChannel);
+        meta.UpdateActivity();
+        return meta.Writer;
+    }
+
+    private ChannelMeta OpenChannel(string host)
     {
         _logger.LogInformation("Creating new channel for host {Host}, capacity:{Capacity}, Concurrency:{Concurrency}", host, ChannelCapacityPerHost, ConcurrencyPerHost);
 
-        var channel = Channel.CreateBounded<ChannelItemMeta>(new BoundedChannelOptions(ChannelCapacityPerHost)
+        var channel = Channel.CreateBounded<ChannelItem>(new BoundedChannelOptions(ChannelCapacityPerHost)
         {
             SingleReader = false,
             SingleWriter = false,
@@ -55,15 +78,14 @@ public class HostThrottleProxy : IHostThrottleProxy
             AllowSynchronousContinuations = false
         });
 
-        // TODO: Implement a way to complete (and thereby remove) these channels when idle for a certain period of time
-        var cts = new CancellationTokenSource();
+        var meta = new ChannelMeta(channel);
         for (var i = 0; i < ConcurrencyPerHost; i++)
-            Task.Factory.StartNew(() => ProcessChannelAsync(host, channel.Reader, cts.Token), TaskCreationOptions.LongRunning);
+            Task.Factory.StartNew(() => ProcessChannelAsync(host, channel.Reader, meta.CancellationTokenSource.Token), TaskCreationOptions.LongRunning);
 
-        return channel;
+        return meta;
     }
 
-    private async Task ProcessChannelAsync(string host, ChannelReader<ChannelItemMeta> reader, CancellationToken cancellationToken)
+    private async Task ProcessChannelAsync(string host, ChannelReader<ChannelItem> reader, CancellationToken channelCancellationToken)
     {
         _logger.LogDebug("Starting channel processor for host {Host}", host);
 
@@ -72,11 +94,12 @@ public class HostThrottleProxy : IHostThrottleProxy
 
         try
         {
-            await foreach (var meta in reader.ReadAllAsync(cancellationToken))
+            await foreach (var item in reader.ReadAllAsync(channelCancellationToken))
             {
-                if (meta.RequestCancellationToken.IsCancellationRequested)
+                var token = CancellationTokenSource.CreateLinkedTokenSource(channelCancellationToken, item.RequestCancellationToken).Token;
+                if (token.IsCancellationRequested)
                 {
-                    meta.CancelResult(meta.RequestCancellationToken);
+                    item.CancelResult(token);
                     continue;
                 }
 
@@ -84,26 +107,26 @@ public class HostThrottleProxy : IHostThrottleProxy
 
                 try
                 {
-                    _logger.LogInformation("Forwarding request to {RequestUrl}", meta.Request.RequestUri);
+                    _logger.LogInformation("Forwarding request to {RequestUrl}", item.Request.RequestUri);
 
-                    var response = await http.SendAsync(meta.Request, meta.RequestCancellationToken);
+                    var response = await http.SendAsync(item.Request, token);
                     response.EnsureSuccessStatusCode();
-                    meta.SetResult(response.Content);
+                    item.SetResult(response.Content);
                 }
-                catch (OperationCanceledException) when (meta.RequestCancellationToken.IsCancellationRequested)
+                catch (OperationCanceledException) when (token.IsCancellationRequested)
                 {
-                    _logger.LogDebug("Forwarded request to {RequestUrl} was cancelled", meta.Request.RequestUri);
-                    meta.CancelResult(meta.RequestCancellationToken);
+                    _logger.LogDebug("Forwarded request to {RequestUrl} was cancelled", item.Request.RequestUri);
+                    item.CancelResult(token);
                 }
                 catch (HttpRequestException ex)
                 {
-                    _logger.LogWarning(ex, "Forwarded request to {RequestUrl} failed: StatusCode:{StatusCode}", meta.Request.RequestUri, ex.StatusCode);
-                    meta.FailResult(ex);
+                    _logger.LogWarning(ex, "Forwarded request to {RequestUrl} failed: StatusCode:{StatusCode}", item.Request.RequestUri, ex.StatusCode);
+                    item.FailResult(ex);
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "Forwarded request to {RequestUrl} failed", meta.Request.RequestUri);
-                    meta.FailResult(ex);
+                    _logger.LogWarning(ex, "Forwarded request to {RequestUrl} failed", item.Request.RequestUri);
+                    item.FailResult(ex);
                 }
             }
         }
@@ -112,14 +135,31 @@ public class HostThrottleProxy : IHostThrottleProxy
             // Channel processing was cancelled
         }
 
-        _logger.LogDebug("Stopping channel processor for host {Host}, Cancelled:{IsCancellationRequested}", host, cancellationToken.IsCancellationRequested);
+        _logger.LogDebug("Stopping channel processor for host {Host}, Cancelled:{IsCancellationRequested}", host, channelCancellationToken.IsCancellationRequested);
     }
 
-    private class ChannelItemMeta
+    private class ChannelMeta
+    {
+        private readonly Channel<ChannelItem> _channel;
+        private long _lastActivityTimestamp;
+
+        public ChannelMeta(Channel<ChannelItem> channel)
+        {
+            _channel = channel;
+            _lastActivityTimestamp = DateTime.UtcNow.ToBinary();
+        }
+
+        public ChannelWriter<ChannelItem> Writer => _channel.Writer;
+        public CancellationTokenSource CancellationTokenSource { get; } = new();
+        public void UpdateActivity() => Interlocked.Exchange(ref _lastActivityTimestamp, DateTime.UtcNow.ToBinary());
+        public DateTime GetLastActivityTimeStamp() => DateTime.FromBinary(Interlocked.Read(ref _lastActivityTimestamp));
+    }
+
+    private class ChannelItem
     {
         private readonly TaskCompletionSource<HttpContent> taskCompletionSource = new();
 
-        public ChannelItemMeta(HttpRequestMessage request, CancellationToken requestCancellationToken)
+        public ChannelItem(HttpRequestMessage request, CancellationToken requestCancellationToken)
         {
             Request = request;
             RequestCancellationToken = requestCancellationToken;
