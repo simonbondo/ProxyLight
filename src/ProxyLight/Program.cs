@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -78,7 +79,12 @@ app.MapGet("/", async (IHttpClientFactory http, ICacheService cacheService, IHos
     }
     catch (HttpRequestException ex)
     {
-        app.Logger.LogError(ex, "[{Id}] Error while proxying request to {RemoteUrl}", id, remoteUrl);
+        if (ex.StatusCode is >= (HttpStatusCode)500 and < (HttpStatusCode)600)
+            app.Logger.LogWarning(ex, "[{Id}] Remote error while proxying request to {RemoteUrl}: [Code:{StatusCode}] {Message}", id, remoteUrl, ex.StatusCode, ex.Message);
+        else if (ex.StatusCode is >= (HttpStatusCode)400 and < (HttpStatusCode)500)
+            app.Logger.LogInformation(ex, "[{Id}] Client error while proxying request to {RemoteUrl}: [Code:{StatusCode}] {Message}", id, remoteUrl, ex.StatusCode, ex.Message);
+        else
+            app.Logger.LogError(ex, "[{Id}] Error while proxying request to {RemoteUrl}: [Code:{StatusCode}] {Message}", id, remoteUrl, ex.StatusCode, ex.Message);
         return Results.BadRequest<ErrorResponse>(new()
         {
             RequestId = id,
