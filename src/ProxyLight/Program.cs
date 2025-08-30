@@ -6,22 +6,21 @@ using Microsoft.AspNetCore.Mvc;
 const string ProxyClientName = "ProxyClient";
 var builder = WebApplication.CreateBuilder(args);
 builder.Services
+    .AddSingleton(TimeProvider.System)
     .AddCors()
     .AddHttpClient(ProxyClientName, client =>
     {
         client.Timeout = Timeout.InfiniteTimeSpan;
-    });
-
-builder.Services.ConfigureHttpJsonOptions(options =>
-{
-    options.SerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
-    options.SerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
-    // Add ErrorResponse to the JSON TypeInfoResolver
-    options.SerializerOptions.TypeInfoResolverChain.Add(ErrorResponseSerializer.Default);
-});
-
-builder.Services.Add(ServiceDescriptor.Singleton<ICacheService, CacheService>());
-builder.Services.Add(ServiceDescriptor.Singleton<IHostThrottleProxy, HostThrottleProxy>());
+    }).Services
+    .ConfigureHttpJsonOptions(options =>
+    {
+        options.SerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
+        options.SerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
+        // Add ErrorResponse to the JSON TypeInfoResolver
+        options.SerializerOptions.TypeInfoResolverChain.Add(ErrorResponseSerializer.Default);
+    })
+    .AddSingleton<ICacheService, CacheService>()
+    .AddSingleton<IHostThrottleProxy, HostThrottleProxy>();
 
 var app = builder.Build();
 app.UseCors(policy => policy

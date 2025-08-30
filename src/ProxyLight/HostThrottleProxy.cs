@@ -81,7 +81,7 @@ public class HostThrottleProxy : IHostThrottleProxy
             AllowSynchronousContinuations = false
         });
 
-        var meta = new ChannelMeta(channel);
+        var meta = new ChannelMeta(channel, _timeProvider);
         for (var i = 0; i < ConcurrencyPerHost; i++)
             Task.Factory.StartNew(() => ProcessChannelAsync(host, channel.Reader, meta.CancellationTokenSource.Token), TaskCreationOptions.LongRunning);
 
