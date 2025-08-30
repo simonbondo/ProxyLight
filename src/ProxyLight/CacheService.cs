@@ -29,10 +29,22 @@ internal class CacheService : ICacheService
 
     public (bool IsEnabled, string Path) GetStatus() => (_cacheEnabled, _cachePath);
 
-    public async Task<CachedResponse?> GetAsync(string method, string requestUrl, CancellationToken cancellationToken)
+    public async Task<CachedResponse?> GetAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         if (!_cacheEnabled)
             return null;
+
+        ArgumentNullException.ThrowIfNull(request?.RequestUri);
+
+        return await GetAsync(request.Method.Method, request.RequestUri.ToString(), cancellationToken);
+    }
+
+    private async Task<CachedResponse?> GetAsync(string method, string requestUrl, CancellationToken cancellationToken)
+    {
+        if (!_cacheEnabled)
+            return null;
+
+        ArgumentException.ThrowIfNullOrEmpty(requestUrl);
 
         var cacheKey = GetCacheKey(method, requestUrl);
         var cacheFilePath = Path.Combine(_cachePath, $"{cacheKey}.json");
@@ -76,23 +88,7 @@ internal class CacheService : ICacheService
         await SetOrUpdateAsync(cacheItem, token);
     }
 
-    public async Task SetOrUpdateAsync(HttpResponseMessage response, string method, string requestUrl, CancellationToken token)
-    {
-        if (!_cacheEnabled)
-            return;
-
-        var cacheItem = new CachedResponse
-        {
-            Timestamp = default,
-            Method = method.ToUpperInvariant(),
-            RequestUrl = requestUrl,
-            ContentType = response.Content.Headers.ContentType?.ToString() ?? "application/octet-stream",
-            Content = await response.Content.ReadAsByteArrayAsync(token)
-        };
-        await SetOrUpdateAsync(cacheItem, token);
-    }
-
-    public async Task SetOrUpdateAsync(CachedResponse response, CancellationToken token)
+    private async Task SetOrUpdateAsync(CachedResponse response, CancellationToken token)
     {
         if (!_cacheEnabled)
             return;

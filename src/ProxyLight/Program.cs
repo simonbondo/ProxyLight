@@ -46,14 +46,15 @@ app.MapGet("/", async (IHttpClientFactory http, ICacheService cacheService, IHos
     if (string.IsNullOrEmpty(remoteUrl))
         return Results.BadRequest<ErrorResponse>(new() { RequestId = id, Error = "Parameter 'u' is required." });
 
-    var cacheItem = await cacheService.GetAsync("GET", remoteUrl, token);
+    var request = new HttpRequestMessage(HttpMethod.Get, remoteUrl);
+
+    var cacheItem = await cacheService.GetAsync(request, token);
     if (cacheItem is not null)
     {
         app.Logger.LogInformation("[{Id}] Cache hit for {RemoteUrl}", id, remoteUrl);
         return Results.Bytes(cacheItem.Content, cacheItem.ContentType);
     }
 
-    var request = new HttpRequestMessage(HttpMethod.Get, remoteUrl);
     // TODO: Copy headers and other properties from the original request
     try
     {
@@ -68,6 +69,11 @@ app.MapGet("/", async (IHttpClientFactory http, ICacheService cacheService, IHos
 
         // TODO: How to use status code from the response?
         return Results.Bytes(contentData, contentType);
+    }
+    catch (OperationCanceledException)
+    {
+        app.Logger.LogInformation("[{Id}] Request to {RemoteUrl} was cancelled", id, remoteUrl);
+        return Results.StatusCode(StatusCodes.Status499ClientClosedRequest);
     }
     catch (HttpRequestException ex)
     {
