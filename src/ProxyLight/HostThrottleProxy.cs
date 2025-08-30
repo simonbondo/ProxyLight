@@ -47,7 +47,9 @@ public class HostThrottleProxy : IHostThrottleProxy
     {
         var idleThreshold = _timeProvider.GetUtcNow() - maxIdleTime;
         KeyValuePair<string, ChannelMeta>? GetIdleChannel()
-            => _channels.FirstOrDefault(kvp => kvp.Value.GetLastActivityTimeStamp() < idleThreshold);
+            => _channels
+                .Cast<KeyValuePair<string, ChannelMeta>?>()
+                .FirstOrDefault(kvp => kvp?.Value.GetLastActivityTimeStamp() < idleThreshold);
 
         while (GetIdleChannel() is { } kvp)
         {
