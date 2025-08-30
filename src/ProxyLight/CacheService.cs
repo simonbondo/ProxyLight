@@ -29,24 +29,13 @@ internal class CacheService : ICacheService
 
     public (bool IsEnabled, string Path) GetStatus() => (_cacheEnabled, _cachePath);
 
-    public async Task<CachedResponse?> GetAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    public async Task<CachedResponse?> GetAsync(string cacheKey, CancellationToken cancellationToken)
     {
         if (!_cacheEnabled)
             return null;
 
-        ArgumentNullException.ThrowIfNull(request?.RequestUri);
+        ArgumentException.ThrowIfNullOrEmpty(cacheKey);
 
-        return await GetAsync(request.Method.Method, request.RequestUri.ToString(), cancellationToken);
-    }
-
-    private async Task<CachedResponse?> GetAsync(string method, string requestUrl, CancellationToken cancellationToken)
-    {
-        if (!_cacheEnabled)
-            return null;
-
-        ArgumentException.ThrowIfNullOrEmpty(requestUrl);
-
-        var cacheKey = GetCacheKey(method, requestUrl);
         var cacheFilePath = Path.Combine(_cachePath, $"{cacheKey}.json");
         if (!File.Exists(cacheFilePath))
             return null;
@@ -59,18 +48,18 @@ internal class CacheService : ICacheService
         }
         catch
         {
-            Remove(method, requestUrl);
+            Remove(cacheKey);
             return null;
         }
 
-        if (cacheItem is null || RemoveIfExpired(cacheItem))
+        if (cacheItem is null || RemoveIfExpired(cacheKey, cacheItem))
             return null;
 
-        await SetOrUpdateAsync(cacheItem, cancellationToken);
+        await SetOrUpdateAsync(cacheKey, cacheItem, cancellationToken);
         return cacheItem;
     }
 
-    public async Task SetOrUpdateAsync(HttpRequestMessage request, HttpContent responseContent, CancellationToken token)
+    public async Task SetOrUpdateAsync(string cacheKey, HttpRequestMessage request, HttpContent responseContent, CancellationToken token)
     {
         if (!_cacheEnabled)
             return;
@@ -85,39 +74,43 @@ internal class CacheService : ICacheService
             ContentType = responseContent.Headers.ContentType?.ToString() ?? "application/octet-stream",
             Content = await responseContent.ReadAsByteArrayAsync(token)
         };
-        await SetOrUpdateAsync(cacheItem, token);
+        await SetOrUpdateAsync(cacheKey, cacheItem, token);
     }
 
-    private async Task SetOrUpdateAsync(CachedResponse response, CancellationToken token)
+    private async Task SetOrUpdateAsync(string cacheKey, CachedResponse response, CancellationToken token)
     {
         if (!_cacheEnabled)
             return;
 
         response.Timestamp = _timeProvider.GetUtcNow();
 
-        var cacheKey = GetCacheKey(response.Method, response.RequestUrl);
         var cacheFilePath = Path.Combine(_cachePath, $"{cacheKey}.json");
 
         using var fileStream = new FileStream(cacheFilePath, FileMode.Create, FileAccess.Write, FileShare.None);
         await JsonSerializer.SerializeAsync(fileStream, response, CachedResponseSerializer.Default.CachedResponse, token);
     }
 
-    public bool RemoveIfExpired(CachedResponse response)
+    public bool RemoveIfExpired(string cacheKey, CachedResponse response)
     {
         if (response.Timestamp + _cacheSlidingAge >= _timeProvider.GetUtcNow())
             return false;
 
         // If the cached response is older than the sliding age, remove it
-        Remove(response.Method, response.RequestUrl);
+        Remove(cacheKey);
         return true;
     }
 
-    public void Remove(string method, string requestUrl)
+    public void Remove(string cacheKey)
     {
-        var cacheKey = GetCacheKey(method, requestUrl);
         var cacheFilePath = Path.Combine(_cachePath, $"{cacheKey}.json");
         if (File.Exists(cacheFilePath))
             File.Delete(cacheFilePath);
+    }
+
+    public string GetCacheKey(HttpRequestMessage request)
+    {
+        ArgumentNullException.ThrowIfNull(request?.RequestUri);
+        return Convert.ToHexStringLower(SHA1.HashData(Encoding.UTF8.GetBytes($"{request.Method.Method}:{request.RequestUri}")));
     }
 
     private static string GetCacheKey(string method, string requestUrl)

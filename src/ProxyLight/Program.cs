@@ -47,8 +47,9 @@ app.MapGet("/", async (IHttpClientFactory http, ICacheService cacheService, IHos
         return Results.BadRequest<ErrorResponse>(new() { RequestId = id, Error = "Parameter 'u' is required." });
 
     var request = new HttpRequestMessage(HttpMethod.Get, remoteUrl);
+    var cacheKey = cacheService.GetCacheKey(request);
 
-    var cacheItem = await cacheService.GetAsync(request, token);
+    var cacheItem = await cacheService.GetAsync(cacheKey, token);
     if (cacheItem is not null)
     {
         app.Logger.LogInformation("[{Id}] Cache hit for {RemoteUrl}", id, remoteUrl);
@@ -65,7 +66,7 @@ app.MapGet("/", async (IHttpClientFactory http, ICacheService cacheService, IHos
         app.Logger.LogInformation("[{Id}] Received {ContentLength} bytes of type {ContentType} from {RemoteUrl}", id, contentData.Length, contentType, remoteUrl);
 
         // Cache the response
-        await cacheService.SetOrUpdateAsync(request, responseContent, token);
+        await cacheService.SetOrUpdateAsync(cacheKey, request, responseContent, token);
 
         // TODO: How to use status code from the response?
         return Results.Bytes(contentData, contentType);
