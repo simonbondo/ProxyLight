@@ -1,9 +1,11 @@
 using System.Net;
+using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Primitives;
+using Microsoft.Net.Http.Headers;
 
 const string ProxyClientName = "ProxyClient";
 var builder = WebApplication.CreateBuilder(args);
@@ -66,6 +68,10 @@ app.MapGet("/", async (HttpRequest request, IHttpClientFactory http, ICacheServi
     if (!StringValues.IsNullOrEmpty(request.Headers.Cookie))
     {
         forwardRequest.Headers.Add("Cookie", request.Headers.Cookie.ToString());
+    }
+    if (!StringValues.IsNullOrEmpty(request.Headers.Authorization))
+    {
+        forwardRequest.Headers.Authorization = AuthenticationHeaderValue.Parse(request.Headers.Authorization.ToString());
     }
 
     var cacheKey = cacheService.GetCacheKey(forwardRequest);
