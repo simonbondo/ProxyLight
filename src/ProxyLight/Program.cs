@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Primitives;
 
 const string ProxyClientName = "ProxyClient";
 var builder = WebApplication.CreateBuilder(args);
@@ -12,6 +13,14 @@ builder.Services
     .AddHttpClient(ProxyClientName, client =>
     {
         client.Timeout = Timeout.InfiniteTimeSpan;
+    })
+    .ConfigurePrimaryHttpMessageHandler((handler, provider) =>
+    {
+        if (handler is HttpClientHandler clientHandler)
+        {
+            // Disable built-in cookie handling
+            clientHandler.UseCookies = false;
+        }
     }).Services
     .ConfigureHttpJsonOptions(options =>
     {
@@ -31,7 +40,7 @@ app.UseCors(policy => policy
 
 ulong requestId = 0;
 
-app.MapGet("/", async (IHttpClientFactory http, ICacheService cacheService, IHostThrottleProxy hostThrottleProxy, CancellationToken token, [FromQuery(Name = "u")] string remoteUrl = "") =>
+app.MapGet("/", async (HttpRequest request, IHttpClientFactory http, ICacheService cacheService, IHostThrottleProxy hostThrottleProxy, CancellationToken token, [FromQuery(Name = "u")] string remoteUrl = "") =>
 {
     var id = Interlocked.Increment(ref requestId);
     // TODO: Move prune logic to a background thread and/or inside the cache service
@@ -47,9 +56,19 @@ app.MapGet("/", async (IHttpClientFactory http, ICacheService cacheService, IHos
     if (string.IsNullOrEmpty(remoteUrl))
         return Results.BadRequest<ErrorResponse>(new() { RequestId = id, Error = "Parameter 'u' is required." });
 
-    var request = new HttpRequestMessage(HttpMethod.Get, remoteUrl);
-    var cacheKey = cacheService.GetCacheKey(request);
+    var forwardRequest = new HttpRequestMessage(HttpMethod.Get, remoteUrl);
+    // TODO: Copy headers and other properties from the original request
+    if (request.Headers.UserAgent.Count > 0)
+    {
+        forwardRequest.Headers.UserAgent.Clear();
+        forwardRequest.Headers.UserAgent.ParseAdd(request.Headers.UserAgent);
+    }
+    if (!StringValues.IsNullOrEmpty(request.Headers.Cookie))
+    {
+        forwardRequest.Headers.Add("Cookie", request.Headers.Cookie.ToString());
+    }
 
+    var cacheKey = cacheService.GetCacheKey(forwardRequest);
     var cacheItem = await cacheService.GetAsync(cacheKey, token);
     if (cacheItem is not null)
     {
@@ -57,17 +76,16 @@ app.MapGet("/", async (IHttpClientFactory http, ICacheService cacheService, IHos
         return Results.Bytes(cacheItem.Content, cacheItem.ContentType);
     }
 
-    // TODO: Copy headers and other properties from the original request
     try
     {
-        var responseContent = await hostThrottleProxy.SendRequestAsync(request, token);
+        var responseContent = await hostThrottleProxy.SendRequestAsync(forwardRequest, token);
 
         var contentData = await responseContent.ReadAsByteArrayAsync(token);
         var contentType = responseContent.Headers.ContentType?.ToString() ?? "application/octet-stream";
         app.Logger.LogInformation("[{Id}] Received {ContentLength} bytes of type {ContentType} from {RemoteUrl}", id, contentData.Length, contentType, remoteUrl);
 
         // Cache the response
-        await cacheService.SetOrUpdateAsync(cacheKey, request, responseContent, token);
+        await cacheService.SetOrUpdateAsync(cacheKey, forwardRequest, responseContent, token);
 
         // TODO: How to use status code from the response?
         return Results.Bytes(contentData, contentType);
